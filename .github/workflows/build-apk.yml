@@ -31,7 +31,7 @@ jobs:
       - name: Unit tests
         run: flutter test
 
-           - name: Build release APK (no code shrinking)
+      - name: Build release APK (no code shrinking)
         run: flutter build apk --release --no-shrink
 
       - name: Build debug APK
