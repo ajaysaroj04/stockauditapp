@@ -61,4 +61,87 @@ void main() {
       expect(p.hasValidVin, isFalse);
     });
   });
+
+  group('barcodes seen on real Hyundai labels (code + serial only)', () {
+    test('Code 39 value gives the serial and no VIN', () {
+      final p = BarcodeParser.parse('FHY 429642');
+      expect(p.serial, '429642');
+      expect(p.vin, isEmpty);
+    });
+
+    test('two barcodes joined with | never create a false VIN', () {
+      final p = BarcodeParser.parse('FHY 429642 | 33429642');
+      expect(p.serial, '429642');
+      expect(p.vin, isEmpty);
+    });
+
+    test('ITF value 33429642 gives the serial', () {
+      expect(BarcodeParser.extractSerial('33429642'), '429642');
+    });
+
+    test('double space between code and serial', () {
+      expect(BarcodeParser.extractSerial('SVA  429815'), '429815');
+    });
+  });
+
+  group('parseLabel (OCR text of the printed label)', () {
+    // As returned by an OCR engine: spaces lost, VIN prefix before "VIN:".
+    const dieselOcr = 'PIO\n3282625070979\nINDIA\nSPEC:\n1.5UGLSM6\n'
+        'FHW51MC57G1B5R4GYJR\nMALPC813LTM\nVIN:\n429642\nDIESEL\n'
+        'D2607B418A10A\n09\nHYUNDAI MOTORINDIA\nPLEASE REMOVEIT BEFOREDELIVERY';
+    const cngOcr = 'OK\n6292611091200\nINDIA\n1CNG\nSPEC:1.2 L M5\n'
+        'HQS4K3615S166SAWT9Y\nVIN:\nMALB141CLTM\n521054\nPETROL\n'
+        'D2609K887A10A\nHYUNDAIMOTORINDIA\nPLEASE REMOVE IT BEFORE DELIVERY';
+
+    test('diesel label with barcode serial', () {
+      final p = BarcodeParser.parseLabel(dieselOcr, serial: '429642');
+      expect(p.vin, 'MALPC813LTM429642');
+      expect(p.specCode, '1.5UGLSM6 FHW51MC57G1B5R4GYJR');
+      expect(p.fuelType, 'Diesel');
+      expect(p.note, isNull);
+    });
+
+    test('diesel label without barcode serial uses the printed one', () {
+      final p = BarcodeParser.parseLabel(dieselOcr);
+      expect(p.vin, 'MALPC813LTM429642');
+    });
+
+    test('CNG label (PETROL also printed) resolves to CNG', () {
+      final p = BarcodeParser.parseLabel(cngOcr, serial: '521054');
+      expect(p.vin, 'MALB141CLTM521054');
+      expect(p.specCode, '1.2 L M5 HQS4K3615S166SAWT9Y');
+      expect(p.fuelType, 'CNG');
+    });
+
+    test('line-based OCR with spaces', () {
+      final p = BarcodeParser.parseLabel(
+        'PIO 3282625070979\nINDIA\nSPEC: 1.5UGLS M6\nFHW51MC57 G1B5 R4G YJR\n'
+        'VIN: MALPC813LTM\nDIESEL 429642\nD2607B418 A10A\nHYUNDAI MOTOR INDIA',
+        serial: '429642',
+      );
+      expect(p.vin, 'MALPC813LTM429642');
+      expect(p.specCode, '1.5UGLS M6 FHW51MC57 G1B5 R4G YJR');
+    });
+
+    test('OCR confusion I/O in the VIN prefix is corrected', () {
+      final p = BarcodeParser.parseLabel(
+        dieselOcr.replaceFirst('MALPC813LTM', 'MALPC8I3LTM'),
+        serial: '429642',
+      );
+      expect(p.vin, 'MALPC813LTM429642');
+    });
+
+    test('serial mismatch between barcode and label is flagged', () {
+      final p = BarcodeParser.parseLabel(dieselOcr, serial: '999999');
+      expect(p.vin, 'MALPC813LTM999999'); // barcode serial is trusted
+      expect(p.note, isNotNull);
+    });
+
+    test('VIN printed in one piece', () {
+      final p = BarcodeParser.parseLabel(
+        'SPEC: 1.5UGLS M6 VIN: MALPC813LTM429642 DIESEL',
+      );
+      expect(p.vin, 'MALPC813LTM429642');
+    });
+  });
 }

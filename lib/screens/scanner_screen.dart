@@ -51,19 +51,17 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
   Future<void> _onDetect(BarcodeCapture capture) async {
     if (_busy) return;
-    String? raw;
+    // A label can carry several barcodes; keep every distinct value in the frame.
+    final values = <String>[];
     for (final b in capture.barcodes) {
-      final v = b.rawValue ?? b.displayValue;
-      if (v != null && v.trim().isNotEmpty) {
-        raw = v;
-        break;
-      }
+      final v = (b.rawValue ?? b.displayValue)?.trim();
+      if (v != null && v.isNotEmpty && !values.contains(v)) values.add(v);
     }
-    if (raw == null) {
+    if (values.isEmpty) {
       _toast('Barcode found but could not be read. Hold steady and try again.');
       return;
     }
-    await _handle(raw);
+    await _handle(values.join(' | '));
   }
 
   Future<void> _handle(String raw) async {
@@ -87,9 +85,13 @@ class _ScannerScreenState extends State<ScannerScreen> {
       MaterialPageRoute(
         builder: (_) => ReviewScreen(
           scan: scan,
+          barcodeSerial: parsed.serial.isEmpty ? null : parsed.serial,
           warning: parsed.isComplete
               ? null
-              : 'Some fields could not be read automatically. Please check them.',
+              : parsed.serial.isNotEmpty
+                  ? 'The barcode only holds the serial number (${parsed.serial}). '
+                      'Tap PHOTOGRAPH LABEL to read the VIN, spec and fuel type.'
+                  : 'Some fields could not be read automatically. Please check them.',
         ),
       ),
     );

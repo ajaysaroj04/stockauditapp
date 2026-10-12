@@ -3,8 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../models/vehicle_scan.dart';
+import 'package:image_picker/image_picker.dart' show ImageSource;
+
 import '../services/barcode_parser.dart';
 import '../services/database_service.dart';
+import '../services/label_ocr_service.dart';
 
 const List<String> kFuelTypes = ['Petrol', 'Diesel', 'CNG', 'EV', 'Hybrid', 'LPG', 'Other'];
 
@@ -15,11 +18,15 @@ class ReviewScreen extends StatefulWidget {
   final bool isEdit;
   final String? warning;
 
+  /// 6-digit serial read from the barcode (= last 6 characters of the VIN).
+  final String? barcodeSerial;
+
   const ReviewScreen({
     super.key,
     required this.scan,
     this.isEdit = false,
     this.warning,
+    this.barcodeSerial,
   });
 
   @override
@@ -36,6 +43,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
       TextEditingController(text: widget.scan.specCode);
   late String? _fuel = widget.scan.fuelType.isEmpty ? null : widget.scan.fuelType;
   bool _saving = false;
+  bool _ocrBusy = false;
+  String? _note;
 
   List<String> get _fuelOptions => [
         ...kFuelTypes,
@@ -110,6 +119,53 @@ class _ReviewScreenState extends State<ReviewScreen> {
     }
   }
 
+  /// Photograph / pick the label, OCR it, and fill VIN, spec and fuel type.
+  Future<void> _readLabel(ImageSource source) async {
+    if (_ocrBusy) return;
+    setState(() => _ocrBusy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final text = await LabelOcrService.readLabel(source);
+      if (text == null) return; // cancelled
+      if (text.trim().isEmpty) {
+        messenger.showSnackBar(const SnackBar(
+          content: Text('No text found. Retake the photo closer, in good light, without glare.'),
+        ));
+        return;
+      }
+      final vinNow = _vin.text.trim();
+      final serial = widget.barcodeSerial ??
+          (vinNow.length == 17 ? vinNow.substring(11) : null);
+      final p = BarcodeParser.parseLabel(text, serial: serial);
+      if (!mounted) return;
+      setState(() {
+        if (p.vin.isNotEmpty) _vin.text = p.vin;
+        if (p.specCode.isNotEmpty) _spec.text = p.specCode;
+        if (p.fuelType.isNotEmpty) _fuel = p.fuelType;
+        _note = p.note;
+        // Keep the barcode part of the raw data and append the OCR text so
+        // misreads can be diagnosed later.
+        final barcodePart = _raw.text.split('\nOCR:').first.trim();
+        final ocrLine = text.trim().replaceAll(RegExp(r'\s*\n\s*'), ' | ');
+        _raw.text = '${barcodePart.isEmpty || barcodePart.startsWith('OCR:') ? '' : '$barcodePart\n'}OCR: $ocrLine';
+      });
+      final missing = <String>[
+        if (p.vin.isEmpty) 'VIN',
+        if (p.specCode.isEmpty) 'spec',
+        if (p.fuelType.isEmpty) 'fuel type',
+      ];
+      messenger.showSnackBar(SnackBar(
+        content: Text(missing.isEmpty
+            ? 'Label read. Please check the values before saving.'
+            : 'Could not read: ${missing.join(', ')}. Type them in or retake the photo.'),
+      ));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Could not read the label: $e')));
+    } finally {
+      if (mounted) setState(() => _ocrBusy = false);
+    }
+  }
+
   Future<void> _delete() async {
     final id = widget.scan.id;
     if (id == null) return;
@@ -159,6 +215,59 @@ class _ReviewScreenState extends State<ReviewScreen> {
                     ],
                   ),
                 ),
+              if (_note != null)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 16),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFE3E3),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.error_outline, color: Color(0xFFC92A2A)),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(_note!, style: const TextStyle(fontSize: 15))),
+                    ],
+                  ),
+                ),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text('Fill from the printed label',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'The barcode only holds the serial number. Photograph the '
+                        'label (hold close, avoid glare) to read VIN, spec and fuel type.',
+                        style: TextStyle(fontSize: 15, color: Colors.black54),
+                      ),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: _ocrBusy ? null : () => _readLabel(ImageSource.camera),
+                        icon: _ocrBusy
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 3, color: Colors.white),
+                              )
+                            : const Icon(Icons.document_scanner),
+                        label: Text(_ocrBusy ? 'READING...' : 'PHOTOGRAPH LABEL'),
+                      ),
+                      TextButton(
+                        onPressed: _ocrBusy ? null : () => _readLabel(ImageSource.gallery),
+                        child: const Text('Choose an existing photo',
+                            style: TextStyle(fontSize: 16)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
               TextFormField(
                 controller: _vin,
                 textCapitalization: TextCapitalization.characters,
@@ -168,9 +277,12 @@ class _ReviewScreenState extends State<ReviewScreen> {
                 inputFormatters: [
                   FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
                 ],
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'VIN (17 characters)',
-                  prefixIcon: Icon(Icons.pin),
+                  prefixIcon: const Icon(Icons.pin),
+                  helperText: widget.barcodeSerial == null
+                      ? null
+                      : 'Barcode serial ${widget.barcodeSerial} = last 6 characters',
                 ),
                 validator: (v) {
                   final s = (v ?? '').trim().toUpperCase();
