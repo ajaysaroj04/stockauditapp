@@ -50,6 +50,19 @@ for name in ("android/app/build.gradle.kts", "android/app/build.gradle"):
     s = f.read_text()
     new = re.sub(r"minSdk\s*=\s*flutter\.minSdkVersion", "minSdk = 23", s)
     new = re.sub(r"minSdkVersion\s+flutter\.minSdkVersion", "minSdkVersion 23", new)
+    # ML Kit text recognition breaks R8 in release builds (missing optional
+    # language classes), so switch code/resource shrinking off explicitly.
+    if "isMinifyEnabled" not in new and "minifyEnabled" not in new:
+        if name.endswith(".kts"):
+            new = re.sub(
+                r"(buildTypes\s*\{\s*release\s*\{)",
+                r"\1\n            isMinifyEnabled = false\n            isShrinkResources = false",
+                new, count=1)
+        else:
+            new = re.sub(
+                r"(buildTypes\s*\{\s*release\s*\{)",
+                r"\1\n            minifyEnabled false\n            shrinkResources false",
+                new, count=1)
     f.write_text(new)
     patched = True
 if not patched:
